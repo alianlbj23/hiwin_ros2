@@ -80,15 +80,13 @@ A ready-to-run image (ROS 2 Humble + MoveIt 2 + ros2_control + `hiwin_driver`) i
 It installs `hiwin_robot_client_library` system-wide and builds `ethercat_driver_ros2` plus this repository in one colcon workspace. Supported `ra_type`
 values: `ra605_710`, `ra610_1355`, `ra610_1476`, `ra610_1869` (default `ra610_1476`).
 
-The easiest way is the launcher script (Python 3, no extra dependencies):
+The easiest way is the menu-driven launcher (Python 3, no extra dependencies, no arguments):
 ```bash
-./run.py            # interactive menu
-./run.py sim        # mock hardware + RViz
-./run.py robot      # real robot; asks for / remembers ROBOT_IP in .env
-./run.py shell      # bash inside the container
-./run.py build      # (re)build the image
-./run.py stop
+./run.py
 ```
+It offers: simulation (mock hardware + RViz), real robot (GC2 cabinet), a shell inside the
+container, build/rebuild, logs, status and stop. Robot type, controller IP and the RViz
+switch are remembered in `.env` (git-ignored) so the next run only needs Enter.
 
 Or by hand:
 ```bash

@@ -1,0 +1,7 @@
+# local launcher settings (robot IP etc.)
+.env
+# colcon artefacts if someone builds in-tree
+build/
+install/
+log/
+__pycache__/
