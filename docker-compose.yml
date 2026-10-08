@@ -38,7 +38,8 @@ services:
       ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
       RA_TYPE: ${RA_TYPE:-ra610_1476}
       LAUNCH_RVIZ: ${LAUNCH_RVIZ:-true}
-      ROBOT_IP: ${ROBOT_IP:?set ROBOT_IP in .env}
+      # run.py guarantees a value; with plain compose set ROBOT_IP in .env.
+      ROBOT_IP: ${ROBOT_IP:-}
       CABINET: gc2
       USE_FAKE_HARDWARE: "false"
 
