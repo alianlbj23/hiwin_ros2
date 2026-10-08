@@ -4,7 +4,7 @@
   <xacro:arg name="name" default="hiwin" />
   <!-- import main macro -->
   <xacro:include filename="$(find hiwin_description)/urdf/ra_macro.xacro" />
-  <!-- possible 'ra_type' values: ra605_710, ra610_1355, ra610_1869 -->
+  <!-- possible 'ra_type' values: ra605_710, ra610_1355, ra610_1476, ra610_1869 -->
   <!-- the default value should raise an error in case this was called without defining the type -->
   <xacro:arg name="ra_type" default="ra6x" />
 

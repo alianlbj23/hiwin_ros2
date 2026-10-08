@@ -179,6 +179,7 @@ def generate_launch_description():
             choices=[
                 "ra605_710",
                 "ra610_1355",
+                "ra610_1476",
                 "ra610_1869",
             ],
         )
