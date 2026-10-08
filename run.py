@@ -145,9 +145,9 @@ def do_build() -> int:
 def do_sim(cfg: dict[str, str]) -> int:
     if not ensure_image():
         return 1
-    cfg["RA_TYPE"] = choose_ra_type(cfg)
-    cfg["LAUNCH_RVIZ"] = "true" if yes_no("開啟 RViz?", cfg["LAUNCH_RVIZ"] == "true") else "false"
-    save_env(cfg)
+    print(f"\n目前設定: 型號={cfg['RA_TYPE']}  RViz={cfg['LAUNCH_RVIZ']}")
+    if not yes_no("沿用以上設定?", True):
+        do_settings(cfg)
     if cfg["LAUNCH_RVIZ"] == "true":
         allow_x11()
     print("\n啟動模擬，Ctrl+C 結束。")
@@ -157,10 +157,16 @@ def do_sim(cfg: dict[str, str]) -> int:
 def do_robot(cfg: dict[str, str]) -> int:
     if not ensure_image():
         return 1
-    cfg["RA_TYPE"] = choose_ra_type(cfg)
-    cfg["ROBOT_IP"] = choose_ip(cfg)
-    cfg["LAUNCH_RVIZ"] = "true" if yes_no("開啟 RViz?", cfg["LAUNCH_RVIZ"] == "true") else "false"
-    save_env(cfg)
+    if not cfg["ROBOT_IP"]:
+        print("\n尚未設定控制器 IP。")
+        cfg["ROBOT_IP"] = choose_ip(cfg)
+        save_env(cfg)
+    print(f"\n目前設定: 型號={cfg['RA_TYPE']}  IP={cfg['ROBOT_IP']}  RViz={cfg['LAUNCH_RVIZ']}")
+    if not yes_no("沿用以上設定?", True):
+        do_settings(cfg)
+        if not cfg["ROBOT_IP"]:
+            print("沒有 IP，已取消。")
+            return 0
     print(f"\n⚠️  即將連線真實機械手臂  型號={cfg['RA_TYPE']}  IP={cfg['ROBOT_IP']}")
     print("    請確認周圍安全、急停可用，MoveIt 預設速度縮放 0.1。")
     if not yes_no("繼續?", False):
@@ -189,6 +195,41 @@ def do_stop() -> int:
     return run(compose() + ["down", "--remove-orphans"])
 
 
+def do_settings(cfg: dict[str, str]) -> int:
+    while True:
+        print("\n---------- 設定 ----------")
+        print(f"  1) 手臂型號      : {cfg['RA_TYPE']}")
+        print(f"  2) 控制器 IP     : {cfg['ROBOT_IP'] or '未設定'}")
+        print(f"  3) 開啟 RViz     : {cfg['LAUNCH_RVIZ']}")
+        print(f"  4) ROS_DOMAIN_ID : {cfg['ROS_DOMAIN_ID']}")
+        print("  5) 恢復預設值")
+        print("  Enter) 返回主選單")
+        choice = ask("選擇")
+        if choice == "":
+            return 0
+        if choice == "1":
+            cfg["RA_TYPE"] = choose_ra_type(cfg)
+        elif choice == "2":
+            cfg["ROBOT_IP"] = choose_ip(cfg)
+        elif choice == "3":
+            cfg["LAUNCH_RVIZ"] = "true" if yes_no("開啟 RViz?", cfg["LAUNCH_RVIZ"] == "true") else "false"
+        elif choice == "4":
+            val = ask("ROS_DOMAIN_ID (0-232)", cfg["ROS_DOMAIN_ID"])
+            if val.isdigit() and 0 <= int(val) <= 232:
+                cfg["ROS_DOMAIN_ID"] = val
+            else:
+                print("無效的數值。")
+                continue
+        elif choice == "5":
+            if yes_no("確定恢復預設值（會清掉 IP）?", False):
+                cfg.update(DEFAULTS)
+        else:
+            print("無效選項。")
+            continue
+        save_env(cfg)
+        print(f"已儲存到 {ENV_FILE.name}")
+
+
 def do_status() -> int:
     rc = run(compose() + ["ps"])
     print(f"\n映像檔 {IMAGE}: {'已建置' if image_exists() else '尚未建置'}")
@@ -197,6 +238,7 @@ def do_status() -> int:
 
 # ----------------------------------------------------------------- menu
 MENU = [
+    ("0", "設定 (型號 / 控制器 IP / RViz / Domain ID)", lambda cfg: do_settings(cfg)),
     ("1", "模擬 (mock hardware + RViz)", lambda cfg: do_sim(cfg)),
     ("2", "真機 (GC2 cabinet)", lambda cfg: do_robot(cfg)),
     ("3", "進入容器 shell", lambda cfg: do_shell(cfg)),
