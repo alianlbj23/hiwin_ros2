@@ -58,13 +58,13 @@ source install/setup.sh
 ### Simulated hardware
 To test the robot in a simulated environment:
 ```bash
-ros2 launch hiwin_ra6_moveit_config ra6_moveit.launch.py ra_type:=ra605_710 use_fake_hardware:=true
+ros2 launch hiwin_ra6_moveit_config ra6_moveit.launch.py ra_type:=ra610_1476 use_fake_hardware:=true
 ```
 
 ### Real Robot Control
 To connect to and control a physical robot:
 ```bash
-ros2 launch hiwin_ra6_moveit_config ra6_moveit.launch.py ra_type:=ra605_710 use_fake_hardware:=false robot_ip:=<robot ip>
+ros2 launch hiwin_ra6_moveit_config ra6_moveit.launch.py ra_type:=ra610_1476 use_fake_hardware:=false robot_ip:=<robot ip>
 ```
 ### **HRSS Offline Simulation**  
 The **HIWIN Robot System Software (HRSS)** provides tools to control basic robot functions.  
@@ -74,3 +74,53 @@ For offline simulation:
 ```bash
 ros2 launch hiwin_ra6_moveit_config ra6_moveit.launch.py ra_type:=ra605_710 use_fake_hardware:=false robot_ip:=<workstation ip>
 ```
+
+## Docker
+A ready-to-run image (ROS 2 Humble + MoveIt 2 + ros2_control + `hiwin_driver`) is defined in the [Dockerfile](Dockerfile).
+It installs `hiwin_robot_client_library` system-wide and builds `ethercat_driver_ros2` plus this repository in one colcon workspace. Supported `ra_type`
+values: `ra605_710`, `ra610_1355`, `ra610_1476`, `ra610_1869` (default `ra610_1476`).
+
+The easiest way is the launcher script (Python 3, no extra dependencies):
+```bash
+./run.py            # interactive menu
+./run.py sim        # mock hardware + RViz
+./run.py robot      # real robot; asks for / remembers ROBOT_IP in .env
+./run.py shell      # bash inside the container
+./run.py build      # (re)build the image
+./run.py stop
+```
+
+Or by hand:
+```bash
+# 1. build
+docker build -t hiwin_ros2:humble .
+
+# 2. allow RViz to use the host display
+xhost +local:root
+
+# 3a. mock hardware
+docker compose up sim
+
+# 3b. real robot (GC2 cabinet, TCP)
+cp .env.example .env            # set ROBOT_IP
+docker compose up robot
+
+# 3c. shell with the workspace sourced
+docker compose run --rm shell
+```
+
+Everything can also be driven with plain `docker run`:
+```bash
+docker run --rm -it --net=host --ipc=host \
+  -e DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix \
+  -e RA_TYPE=ra610_1476 -e USE_FAKE_HARDWARE=false -e ROBOT_IP=<robot ip> \
+  hiwin_ros2:humble
+```
+Environment variables: `RA_TYPE`, `ROBOT_IP`, `CABINET` (`gc2`|`ecat`), `USE_FAKE_HARDWARE`, `LAUNCH_RVIZ`.
+The image defaults to `USE_FAKE_HARDWARE=true`, so a bare `docker run` never commands a real robot.
+
+Notes
+- `cabinet:=ecat` additionally needs the IgH EtherCAT master kernel module on the host and the
+  `/dev/EtherCAT0`, `/dev/i2c-0`, `/dev/ttyS1` devices passed into the container (see the commented
+  block in [docker-compose.yml](docker-compose.yml)). Only the EtherLab userspace library is inside the image.
+- `--net=host` is required both for DDS discovery and for the TCP connection to the robot controller.

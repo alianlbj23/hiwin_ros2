@@ -1,0 +1,68 @@
+# Usage:
+#   cp .env.example .env && edit ROBOT_IP
+#   xhost +local:root                 # allow RViz to use the host X server
+#   docker compose up robot           # real RA610-1476 via GC2 cabinet
+#   docker compose up sim             # mock hardware
+#
+x-common: &common
+  image: hiwin_ros2:humble
+  build:
+    context: .
+  network_mode: host          # DDS discovery + TCP to the robot controller
+  ipc: host
+  stdin_open: true
+  tty: true
+  cap_add:
+    - SYS_NICE                # let ros2_control_node raise its scheduling priority
+  ulimits:
+    rtprio: 99
+    memlock: -1
+  environment:
+    DISPLAY: ${DISPLAY}
+    QT_X11_NO_MITSHM: "1"
+    ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+    RA_TYPE: ${RA_TYPE:-ra610_1476}
+    LAUNCH_RVIZ: ${LAUNCH_RVIZ:-true}
+  volumes:
+    - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    - /dev/shm:/dev/shm
+
+services:
+  # Real robot through the GC2 cabinet (TCP, needs ROBOT_IP).
+  robot:
+    <<: *common
+    container_name: hiwin_ra6_robot
+    environment:
+      DISPLAY: ${DISPLAY}
+      QT_X11_NO_MITSHM: "1"
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+      RA_TYPE: ${RA_TYPE:-ra610_1476}
+      LAUNCH_RVIZ: ${LAUNCH_RVIZ:-true}
+      ROBOT_IP: ${ROBOT_IP:?set ROBOT_IP in .env}
+      CABINET: gc2
+      USE_FAKE_HARDWARE: "false"
+
+  # Mock hardware: safe to run anywhere, no robot required.
+  sim:
+    <<: *common
+    container_name: hiwin_ra6_sim
+    environment:
+      DISPLAY: ${DISPLAY}
+      QT_X11_NO_MITSHM: "1"
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+      RA_TYPE: ${RA_TYPE:-ra610_1476}
+      LAUNCH_RVIZ: ${LAUNCH_RVIZ:-true}
+      USE_FAKE_HARDWARE: "true"
+
+  # Interactive shell with the workspace sourced.
+  shell:
+    <<: *common
+    container_name: hiwin_ra6_shell
+    command: bash
+    # For cabinet:=ecat (EtherCAT drives + cabinet IO) uncomment and make sure
+    # the IgH EtherCAT master kernel module is loaded on the host:
+    # privileged: true
+    # devices:
+    #   - /dev/EtherCAT0:/dev/EtherCAT0
+    #   - /dev/i2c-0:/dev/i2c-0
+    #   - /dev/ttyS1:/dev/ttyS1

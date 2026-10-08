@@ -1,0 +1,15 @@
+.git
+.gitattributes
+**/build
+**/install
+**/log
+**/__pycache__
+# Docker infrastructure is not part of the ROS workspace; keeping it out of the
+# context means editing it does not invalidate the colcon build layer.
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.override.yml
+.env
+.env.example
+run.py
