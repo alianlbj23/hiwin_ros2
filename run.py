@@ -5,18 +5,31 @@
 
 Robot type, controller IP, RViz switch and ROS_DOMAIN_ID are remembered in
 .env (git-ignored), so the next run only needs Enter.
+
+The image is built by GitHub Actions (.github/workflows/docker-image.yml) and
+pulled from GHCR; set HIWIN_IMAGE to use another tag or a locally built image.
 """
 import ipaddress
 import os
 import shutil
+import socket
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 ENV_FILE = ROOT / ".env"
-IMAGE = "hiwin_ros2:humble"
+DEFAULT_IMAGE = "ghcr.io/alianlbj23/hiwin_ros2:humble"
+IMAGE = os.environ.get("HIWIN_IMAGE", "").strip() or DEFAULT_IMAGE
 RA_TYPES = ["ra605_710", "ra610_1355", "ra610_1476", "ra610_1869"]
+# TCP port the GC2 controller listens on (hiwin_robot_client_library COMMAND_PORT).
+# Used only to detect candidates; the driver itself does the real connection.
+HIWIN_COMMAND_PORT = 1503
+PROBE_TIMEOUT_S = 0.5
+AUTO_SCAN_MIN_PREFIX = 24     # auto-scan only /24 or smaller networks (<= 254 hosts)
+MANUAL_SCAN_MAX_HOSTS = 1024  # /22
+SCAN_WORKERS = 64
 DEFAULTS = {"RA_TYPE": "ra610_1476", "ROBOT_IP": "", "LAUNCH_RVIZ": "true", "ROS_DOMAIN_ID": "0"}
 
 
@@ -93,15 +106,157 @@ def valid_ip(text: str) -> bool:
         return False
 
 
+# ----------------------------------------------------- controller discovery
+def tcp_port_open(ip: str, port: int = HIWIN_COMMAND_PORT, timeout: float = PROBE_TIMEOUT_S) -> bool:
+    """True if a TCP connection to ip:port succeeds within `timeout` seconds."""
+    try:
+        with socket.create_connection((ip, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def host_networks(ip_addr_output: str | None = None) -> list[tuple[str, ipaddress.IPv4Network]]:
+    """(interface, network) for this PC's IPv4 interfaces, parsed from `ip -4 -o addr`.
+
+    Loopback, Docker/bridge/veth, VPN (tailscale) and single-address (/32) entries are skipped.
+    """
+    if ip_addr_output is None:
+        if shutil.which("ip") is None:
+            return []
+        try:
+            ip_addr_output = subprocess.run(
+                ["ip", "-4", "-o", "addr"], capture_output=True, text=True, timeout=5, check=False
+            ).stdout
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"Note: could not list network interfaces: {exc}")
+            return []
+    nets: list[tuple[str, ipaddress.IPv4Network]] = []
+    for line in ip_addr_output.splitlines():
+        parts = line.split()
+        if len(parts) < 4 or parts[2] != "inet":
+            continue
+        iface, cidr = parts[1], parts[3]
+        if iface == "lo" or iface.startswith(("docker", "br-", "veth", "tailscale", "virbr")):
+            continue
+        try:
+            net = ipaddress.ip_interface(cidr).network
+        except ValueError:
+            continue
+        if isinstance(net, ipaddress.IPv4Network) and net.num_addresses > 2:
+            nets.append((iface, net))
+    return nets
+
+
+def neighbour_ips() -> list[str]:
+    """IPv4 addresses in the ARP table (`ip -4 neigh`), i.e. devices seen on directly attached networks."""
+    if shutil.which("ip") is None:
+        return []
+    try:
+        out = subprocess.run(["ip", "-4", "neigh", "show"], capture_output=True, text=True, timeout=5, check=False).stdout
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"Note: could not read the ARP table: {exc}")
+        return []
+    ips = []
+    for line in out.splitlines():
+        parts = line.split()
+        if parts and valid_ip(parts[0]) and "FAILED" not in parts:
+            ips.append(parts[0])
+    return ips
+
+
+def default_gateways(route_output: str | None = None) -> set[str]:
+    """IPv4 default-gateway addresses from `ip -4 route show default`. Gateways/NAT boxes can
+    accept connections on many ports, so they are flagged in the candidate list."""
+    if route_output is None:
+        if shutil.which("ip") is None:
+            return set()
+        try:
+            route_output = subprocess.run(
+                ["ip", "-4", "route", "show", "default"], capture_output=True, text=True, timeout=5, check=False
+            ).stdout
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"Note: could not read the routing table: {exc}")
+            return set()
+    gws = set()
+    for line in route_output.splitlines():
+        parts = line.split()
+        if "via" in parts:
+            gw = parts[parts.index("via") + 1]
+            if valid_ip(gw):
+                gws.add(gw)
+    return gws
+
+
+def scan_network(net: ipaddress.IPv4Network, port: int = HIWIN_COMMAND_PORT) -> list[str]:
+    """Hosts in `net` that accept a TCP connection on `port`, in address order."""
+    hosts = [str(h) for h in net.hosts()]
+    with ThreadPoolExecutor(max_workers=SCAN_WORKERS) as pool:
+        results = pool.map(lambda ip: tcp_port_open(ip, port), hosts)
+        return [ip for ip, ok in zip(hosts, results) if ok]
+
+
+def is_wsl() -> bool:
+    try:
+        return "microsoft" in Path("/proc/version").read_text().lower()
+    except OSError:
+        return False
+
+
+def find_candidates(cfg: dict[str, str]) -> dict[str, str]:
+    """Candidate controller IPs -> short note. Saved IP first, then every host answering on port 1503."""
+    cands: dict[str, str] = {}
+    saved = cfg.get("ROBOT_IP", "")
+    if saved:
+        state = "answers" if tcp_port_open(saved, HIWIN_COMMAND_PORT) else "no answer"
+        cands[saved] = f"saved in .env, port {HIWIN_COMMAND_PORT} {state}"
+    for ip in neighbour_ips():
+        if ip not in cands and tcp_port_open(ip, HIWIN_COMMAND_PORT):
+            cands[ip] = f"seen on the network (ARP), port {HIWIN_COMMAND_PORT} answers"
+    for iface, net in host_networks():
+        if net.prefixlen < AUTO_SCAN_MIN_PREFIX:
+            print(f"  {iface} {net}: too large to scan automatically, use 's' with a /24 inside it")
+            continue
+        print(f"  scanning {net} ({iface}) for port {HIWIN_COMMAND_PORT} ...")
+        for ip in scan_network(net, HIWIN_COMMAND_PORT):
+            cands.setdefault(ip, f"port {HIWIN_COMMAND_PORT} answers on {iface} ({net})")
+    for gw in default_gateways() & cands.keys():
+        cands[gw] += "  <- this PC's gateway/router, probably not the robot"
+    return cands
+
+
+def print_ip_help() -> None:
+    print(f"""
+How to find the controller IP
+  - On the GC2 teach pendant open the controller's network settings; the IPv4 address
+    shown there is the one to enter. run.py remembers it in .env afterwards.
+  - The controller listens on TCP port {HIWIN_COMMAND_PORT}. From this PC:
+        ping <ip>                 # is it reachable at all?
+        nc -zv <ip> {HIWIN_COMMAND_PORT}           # does the HIWIN service answer?
+    This menu runs the same probe for every candidate.
+  - `ip -4 addr` lists this PC's own networks. The controller is normally on the same
+    subnet as the PC's wired interface (PC 192.168.0.5/24 -> scan 192.168.0.0/24 with 's').
+  - Robot not listed? It must be powered on, in a mode that accepts external control,
+    and on a network this PC can reach. Enter the IP manually with 'c' if you know it.""")
+    if is_wsl():
+        print("""  - WSL2 (this machine): in the default NAT mode WSL does not see LAN devices by ARP, so
+    automatic discovery usually finds nothing. Enter the IP with 'c' or scan the LAN
+    subnet explicitly with 's' (e.g. 192.168.0.0/24); TCP through NAT works.""")
+
+
 def image_exists() -> bool:
     return subprocess.run(["docker", "image", "inspect", IMAGE], capture_output=True).returncode == 0
 
 
 def ensure_image() -> bool:
-    """Make sure the image exists, offering to build it if not."""
+    """Make sure the image exists locally: offer to pull it, then to build it as a fallback."""
     if image_exists():
         return True
-    if yes_no(f"Image {IMAGE} not found. Build it now (takes 10-20 min)?", True):
+    if yes_no(f"Image {IMAGE} not found. Pull it from the registry now?", True):
+        if do_pull() == 0:
+            return True
+        print("Pull failed. If the GHCR package is private, run `docker login ghcr.io` first.")
+    if yes_no("Build the image locally instead (takes 10-20 min)?", False):
         return do_build() == 0
     print("Cannot start without the image.")
     return False
@@ -133,11 +288,55 @@ def choose_ra_type(cfg: dict[str, str]) -> str:
 
 
 def choose_ip(cfg: dict[str, str]) -> str:
+    """Pick the GC2 controller IP from discovered candidates, a manual entry or a subnet scan."""
+    print("\nLooking for HIWIN controllers ...")
+    cands = find_candidates(cfg)
     while True:
-        val = ask("HIWIN controller (GC2) IP", cfg["ROBOT_IP"])
-        if valid_ip(val):
-            return val
-        print("Not a valid IP address, try again.")
+        ips = list(cands)
+        print("\nController IP candidates:")
+        for i, ip in enumerate(ips, 1):
+            print(f"  {i}) {ip:<15} {cands[ip]}")
+        if not ips:
+            print("  (none found)")
+        print("  c) enter an IP manually")
+        print("  s) scan a subnet (e.g. 192.168.0.0/24)")
+        print("  r) rescan")
+        print("  h) how to find the controller IP")
+        val = ask("Select (or type an IP)", "1" if ips else "c").lower()
+        if val.isdigit() and 1 <= int(val) <= len(ips):
+            return ips[int(val) - 1]
+        if val == "h":
+            print_ip_help()
+        elif val == "r":
+            cands = find_candidates(cfg)
+        elif val == "s":
+            text = ask("Subnet to scan (CIDR)", "192.168.0.0/24")
+            try:
+                net = ipaddress.ip_network(text, strict=False)
+            except ValueError:
+                print("Not a valid subnet, expected something like 192.168.0.0/24.")
+                continue
+            if not isinstance(net, ipaddress.IPv4Network) or net.num_addresses > MANUAL_SCAN_MAX_HOSTS:
+                print(f"Only IPv4 networks up to {MANUAL_SCAN_MAX_HOSTS} addresses (/22) can be scanned.")
+                continue
+            print(f"  scanning {net} for port {HIWIN_COMMAND_PORT} ...")
+            found = scan_network(net, HIWIN_COMMAND_PORT)
+            for ip in found:
+                cands.setdefault(ip, f"port {HIWIN_COMMAND_PORT} answers (scan {net})")
+            print(f"  {len(found)} host(s) answer on port {HIWIN_COMMAND_PORT}")
+        elif val == "c" or valid_ip(val):
+            ip = val if valid_ip(val) else ask("Controller IP")
+            if not valid_ip(ip):
+                print("Not a valid IP address.")
+                continue
+            if tcp_port_open(ip, HIWIN_COMMAND_PORT):
+                print(f"  {ip}: port {HIWIN_COMMAND_PORT} answers.")
+                return ip
+            print(f"  {ip}: no answer on port {HIWIN_COMMAND_PORT} (robot off, wrong IP or not reachable from here).")
+            if yes_no("Use it anyway?", False):
+                return ip
+        else:
+            print("Invalid choice.")
 
 
 def common_env(cfg: dict[str, str]) -> dict[str, str]:
@@ -151,7 +350,13 @@ def show_settings(cfg: dict[str, str], with_ip: bool) -> None:
 
 
 # ----------------------------------------------------------------- actions
+def do_pull() -> int:
+    """Fetch the image built by GitHub Actions (also refreshes a stale local copy)."""
+    return run(["docker", "pull", IMAGE])
+
+
 def do_build() -> int:
+    """Local fallback for when the registry is unreachable or the Dockerfile is being changed."""
     return run(["docker", "build", "-t", IMAGE, "."])
 
 
@@ -249,7 +454,7 @@ def do_stop() -> int:
 
 def do_status() -> int:
     rc = run(compose() + ["ps"])
-    print(f"\nImage {IMAGE}: {'built' if image_exists() else 'not built'}")
+    print(f"\nImage {IMAGE}: {'present' if image_exists() else 'not pulled'}")
     return rc
 
 
@@ -259,10 +464,11 @@ MENU = [
     ("1", "Simulation (mock hardware + RViz)", lambda cfg: do_sim(cfg)),
     ("2", "Real robot (GC2 cabinet)", lambda cfg: do_robot(cfg)),
     ("3", "Shell inside the container", lambda cfg: do_shell(cfg)),
-    ("4", "Build / rebuild the image", lambda cfg: do_build()),
+    ("4", "Pull / update the image (from GHCR)", lambda cfg: do_pull()),
     ("5", "Follow container logs", lambda cfg: do_logs()),
     ("6", "Status", lambda cfg: do_status()),
     ("7", "Stop containers", lambda cfg: do_stop()),
+    ("8", "Build the image locally (fallback)", lambda cfg: do_build()),
 ]
 
 

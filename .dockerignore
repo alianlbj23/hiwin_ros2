@@ -13,3 +13,5 @@ docker-compose.override.yml
 .env
 .env.example
 run.py
+# User code lives in a bind-mounted overlay workspace, never in the image.
+user_ws

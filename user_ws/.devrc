@@ -1,0 +1,8 @@
+# Loaded by `bash --rcfile` in the dev container (see docker-compose.yml, service `dev`).
+# Order matters: ROS 2 -> the prebuilt HIWIN/MoveIt workspace (read-only) -> your own
+# workspace, so your packages overlay everything below.
+source /opt/ros/humble/setup.bash
+[ -f /ros2_ws/install/setup.bash ] && source /ros2_ws/install/setup.bash
+[ -f /user_ws/install/setup.bash ] && source /user_ws/install/setup.bash
+cd /user_ws
+export PS1='[dev \w]\$ '

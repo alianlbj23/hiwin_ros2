@@ -5,7 +5,9 @@
 #   docker compose up sim             # mock hardware
 #
 x-common: &common
-  image: hiwin_ros2:humble
+  # Pulled from GHCR (built by .github/workflows/docker-image.yml). Set HIWIN_IMAGE
+  # to use another tag or a locally built image; `docker compose build` still works.
+  image: ${HIWIN_IMAGE:-ghcr.io/alianlbj23/hiwin_ros2:humble}
   build:
     context: .
   network_mode: host          # DDS discovery + TCP to the robot controller
@@ -54,6 +56,23 @@ services:
       RA_TYPE: ${RA_TYPE:-ra610_1476}
       LAUNCH_RVIZ: ${LAUNCH_RVIZ:-true}
       USE_FAKE_HARDWARE: "true"
+
+  # Your own code: user_ws/ is mounted at /user_ws and built as an overlay
+  # workspace. Driven by ./dev.py. Talks to the sim/robot container over ROS 2
+  # (host network); /ros2_ws and the MoveIt configuration are not touched.
+  dev:
+    <<: *common
+    container_name: hiwin_ra6_dev
+    working_dir: /user_ws
+    command: ["bash", "--rcfile", "/user_ws/.devrc"]
+    environment:
+      DISPLAY: ${DISPLAY}
+      QT_X11_NO_MITSHM: "1"
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /dev/shm:/dev/shm
+      - ./user_ws:/user_ws
 
   # Interactive shell with the workspace sourced.
   shell:
