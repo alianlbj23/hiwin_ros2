@@ -1,124 +1,179 @@
-# HIWIN Robot ROS2
+# HIWIN RA6 ROS 2 (Docker)
 
-[![License - apache 2.0](https://img.shields.io/:license-Apache%202.0-yellowgreen.svg)](https://opensource.org/licenses/Apache-2.0)
-[![License](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
+Run a HIWIN RA6 robot (default: RA610-1476) with ROS 2 Humble and MoveIt 2 from a
+single Docker image. Nothing has to be installed on the host except Docker.
 
-This repository provides the ROS2 stack for **HIWIN robots**, allowing integration with the ROS2 ecosystem for easy robot control and simulation.
+Supported robot types: `ra605_710`, `ra610_1355`, `ra610_1476`, `ra610_1869`.
 
-## Contents
-This repository follows branch naming aligned with ROS 2 distributions.
-- Stable branches: `humble`, `iron`
-- Development branches: `*-devel` (may be unstable)
+## 1. Requirements
 
-## Features ##
-- **Integration with `ros2_control`:** Direct hardware interface via ROS 2 control for precise control and monitoring.
-- **MoveIt 2 Integration:** Enables motion planning, trajectory execution, and manipulation tasks.
-- **Robot Drivers:** Built on top of the [hiwin_robot_client_library](https://github.com/HIWINCorporation/hiwin_robot_client_library) (currently under development) to support position control for HIWIN robots.
+- Ubuntu 22.04 (or WSL2 with WSLg) with Docker Engine and the `docker compose` plugin
+- Python 3 (for `run.py`, no extra packages)
+- A desktop session (`DISPLAY` set) if you want to see RViz
+- For a real robot: the robot connected to a HIWIN GC2 cabinet, reachable over the network
 
-:warning: **Known Limitations**:warning:
-The **hiwin_robot_client_library** is still under development. As a result:
-1. The library cannot handle rapid command sequences effectively.
-2. Execution times for physical robot movements are significantly longer than planned durations in trajectory commands.
+## 2. Quick start
 
-## Packages in the Repository:
-- `hiwin_driver` - Provides hardware interfaces for communication with HIWIN robots, including the implementation of dedicated controllers.
-- `hiwin_ra6_moveit_config` - MoveIt 2 configuration package for the RA6 series of HIWIN robots. Includes tools for integration with MoveIt 2 for motion planning and control.
-- `hiwin_rs4_moveit_config` - MoveIt 2 configuration package for the RS4 series of HIWIN robots. Includes tools for integration with MoveIt 2 for motion planning and control.
-
-## General Requirements
-- **Operating System:** Ubuntu 22.04 LTS
-- **ROS 2 version:** Humble Hawksbill
-
-## Getting Started
-1. **Install ros2 packages**
-Follow the steps outlined in the [ROS 2 Humble installation guide](https://docs.ros.org/en/humble/Installation.html).
-2. **Source the ROS 2 Environment**
 ```bash
-source /opt/ros/humble/setup.bash
-```
-3. **Create a ROS 2 Workspace**
-```bash
-mkdir -p ~/colcon_ws/src
-```
-4. **Clone the Repository and Build**
-```bash
-cd ~/colcon_ws
-
-git clone https://github.com/HIWINCorporation/hiwin_ros2.git src/hiwin_ros2
-
-colcon build --symlink-install
-
-source install/setup.sh
-```
-
-## Usage
-### :warning: **SAFETY FIRST**:warning:
-*It is strongly recommended to test your code in simulation before using it on physical hardware.*
-
-### Simulated hardware
-To test the robot in a simulated environment:
-```bash
-ros2 launch hiwin_ra6_moveit_config ra6_moveit.launch.py ra_type:=ra610_1476 use_fake_hardware:=true
-```
-
-### Real Robot Control
-To connect to and control a physical robot:
-```bash
-ros2 launch hiwin_ra6_moveit_config ra6_moveit.launch.py ra_type:=ra610_1476 use_fake_hardware:=false robot_ip:=<robot ip>
-```
-### **HRSS Offline Simulation**  
-The **HIWIN Robot System Software (HRSS)** provides tools to control basic robot functions.  
-For offline simulation:
-1. Download [HRSS Offline](https://www.hiwinsupport.com/download_center.aspx?pid=MAR).
-2. Launch the robot simulation:
-```bash
-ros2 launch hiwin_ra6_moveit_config ra6_moveit.launch.py ra_type:=ra605_710 use_fake_hardware:=false robot_ip:=<workstation ip>
-```
-
-## Docker
-A ready-to-run image (ROS 2 Humble + MoveIt 2 + ros2_control + `hiwin_driver`) is defined in the [Dockerfile](Dockerfile).
-It installs `hiwin_robot_client_library` system-wide and builds `ethercat_driver_ros2` plus this repository in one colcon workspace. Supported `ra_type`
-values: `ra605_710`, `ra610_1355`, `ra610_1476`, `ra610_1869` (default `ra610_1476`).
-
-The easiest way is the menu-driven launcher (Python 3, no extra dependencies, no arguments):
-```bash
+git clone https://github.com/alianlbj23/hiwin_ros2.git
+cd hiwin_ros2
 ./run.py
 ```
-It offers: simulation (mock hardware + RViz), real robot (GC2 cabinet), a shell inside the
-container, build/rebuild, logs, status and stop. Robot type, controller IP and the RViz
-switch are remembered in `.env` (git-ignored) so the next run only needs Enter.
 
-Or by hand:
-```bash
-# 1. build
-docker build -t hiwin_ros2:humble .
+`run.py` shows a menu. The first time you pick *Simulation* or *Real robot* it
+offers to build the image (10-20 minutes, once).
 
-# 2. allow RViz to use the host display
-xhost +local:root
-
-# 3a. mock hardware
-docker compose up sim
-
-# 3b. real robot (GC2 cabinet, TCP)
-cp .env.example .env            # set ROBOT_IP
-docker compose up robot
-
-# 3c. shell with the workspace sourced
-docker compose run --rm shell
+```
+========== HIWIN RA6 Docker launcher ==========
+ Settings: type=ra610_1476  IP=unset  RViz=true
+  0) Settings (robot type / controller IP / RViz / domain ID)
+  1) Simulation (mock hardware + RViz)
+  2) Real robot (GC2 cabinet)
+  3) Shell inside the container
+  4) Build / rebuild the image
+  5) Follow container logs
+  6) Status
+  7) Stop containers
+  q) Quit
 ```
 
-Everything can also be driven with plain `docker run`:
-```bash
-docker run --rm -it --net=host --ipc=host \
-  -e DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix \
-  -e RA_TYPE=ra610_1476 -e USE_FAKE_HARDWARE=false -e ROBOT_IP=<robot ip> \
-  hiwin_ros2:humble
-```
-Environment variables: `RA_TYPE`, `ROBOT_IP`, `CABINET` (`gc2`|`ecat`), `USE_FAKE_HARDWARE`, `LAUNCH_RVIZ`.
-The image defaults to `USE_FAKE_HARDWARE=true`, so a bare `docker run` never commands a real robot.
+| Option | What it does |
+|---|---|
+| 0 | Change robot type, controller IP, RViz on/off, ROS_DOMAIN_ID. Saved to `.env`, remembered next time. |
+| 1 | Start MoveIt with a simulated robot. Safe anywhere, no robot needed. RViz opens if enabled. |
+| 2 | Start MoveIt connected to the real robot. Asks for the controller IP once, then asks you to confirm before connecting. |
+| 3 | Open a terminal inside the container with ROS 2 already set up. Use it for `ros2 topic echo`, your own nodes, etc. |
+| 4 | Build or rebuild the Docker image. |
+| 5 | Show the live log of the running container. |
+| 6 | Show which containers are running and whether the image exists. |
+| 7 | Stop everything. |
 
-Notes
-- `cabinet:=ecat` additionally needs the IgH EtherCAT master kernel module on the host and the
-  `/dev/EtherCAT0`, `/dev/i2c-0`, `/dev/ttyS1` devices passed into the container (see the commented
-  block in [docker-compose.yml](docker-compose.yml)). Only the EtherLab userspace library is inside the image.
-- `--net=host` is required both for DDS discovery and for the TCP connection to the robot controller.
+Press `Ctrl+C` in the launcher to stop a running simulation or robot session.
+
+### Simulation
+
+1. `./run.py` → `1`
+2. Press Enter to accept the current settings (or `n` to change them).
+3. Wait for `You can start planning now!` in the log. RViz opens with the robot.
+4. In RViz, drag the end-effector marker and press **Plan & Execute** in the MotionPlanning panel.
+
+### Real robot
+
+1. Make sure the GC2 cabinet is on, the robot is in a safe pose and the E-stop is within reach.
+2. `./run.py` → `2`
+3. Enter the controller IP when asked (asked only the first time).
+4. Read the warning and answer `y`.
+5. Wait for `You can start planning now!`. The robot now follows every trajectory sent through MoveIt.
+
+Motion speed is limited to 10 % of the robot's maximum by default. Raise it in RViz
+(Velocity Scaling) only after testing in simulation.
+
+## 3. Without the menu (docker compose)
+
+```bash
+docker build -t hiwin_ros2:humble .      # once
+cp .env.example .env                     # edit ROBOT_IP / RA_TYPE if needed
+xhost +local:root                        # let RViz open a window
+
+docker compose up sim                    # simulation
+docker compose up robot                  # real robot
+docker compose run --rm shell            # terminal inside the container
+docker compose down                      # stop
+```
+
+Settings in `.env`:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RA_TYPE` | `ra610_1476` | Robot model |
+| `ROBOT_IP` | *(empty)* | GC2 controller IP, required for `robot` |
+| `LAUNCH_RVIZ` | `true` | Open RViz |
+| `ROS_DOMAIN_ID` | `0` | Must match other ROS 2 machines you want to talk to |
+
+## 4. Talking to the robot from your own code
+
+The container uses the host network, so any ROS 2 Humble node on the same machine
+(or on the same LAN with the same `ROS_DOMAIN_ID`) sees the topics below directly.
+No extra configuration is needed.
+
+To try it from a second terminal on the host:
+
+```bash
+./run.py            # → 3 (shell inside the container)
+ros2 topic list
+ros2 topic echo /joint_states
+```
+
+Planning group name: `manipulator`. Joint names: `joint_1` … `joint_6`.
+Base frame: `base_link`. Flange frame: `link_6`. Named pose: `home`.
+
+## 5. What is published when the system is running
+
+### Topics
+
+| Topic | Type | Content |
+|---|---|---|
+| `/joint_states` | `sensor_msgs/msg/JointState` | Current joint positions and velocities, 500 Hz |
+| `/tf`, `/tf_static` | `tf2_msgs/msg/TFMessage` | Transform tree `base_link` → `link_1` … `link_6` |
+| `/robot_description` | `std_msgs/msg/String` | Robot URDF (latched) |
+| `/manipulator_controller/controller_state` | `control_msgs/msg/JointTrajectoryControllerState` | Desired vs. actual joint state while a trajectory runs |
+| `/manipulator_controller/joint_trajectory` | `trajectory_msgs/msg/JointTrajectory` | Publish here to send a trajectory directly, bypassing MoveIt |
+| `/dynamic_joint_states` | `control_msgs/msg/DynamicJointState` | Same data as `/joint_states` with interface names |
+| `/monitored_planning_scene` | `moveit_msgs/msg/PlanningScene` | MoveIt's current scene, published on every change |
+| `/planning_scene` | `moveit_msgs/msg/PlanningScene` | Publish here to modify the scene |
+| `/planning_scene_world` | `moveit_msgs/msg/PlanningSceneWorld` | Publish here to add world objects |
+| `/collision_object` | `moveit_msgs/msg/CollisionObject` | Publish here to add or remove obstacles |
+| `/attached_collision_object` | `moveit_msgs/msg/AttachedCollisionObject` | Publish here to attach an object to the robot |
+| `/display_planned_path` | `moveit_msgs/msg/DisplayTrajectory` | Last planned trajectory (shown in RViz) |
+| `/motion_plan_request` | `moveit_msgs/msg/MotionPlanRequest` | Last planning request |
+| `/trajectory_execution_event` | `std_msgs/msg/String` | Publish `stop` here to abort the running trajectory |
+| `/display_contacts` | `visualization_msgs/msg/MarkerArray` | Collision contact markers for RViz |
+
+### Actions
+
+| Action | Type | Use |
+|---|---|---|
+| `/move_action` | `moveit_msgs/action/MoveGroup` | Plan and (optionally) execute a motion. Main entry point for MoveIt clients. |
+| `/execute_trajectory` | `moveit_msgs/action/ExecuteTrajectory` | Execute an already planned trajectory |
+| `/manipulator_controller/follow_joint_trajectory` | `control_msgs/action/FollowJointTrajectory` | Send a joint trajectory directly to the controller |
+
+### Services
+
+| Service | Type | Use |
+|---|---|---|
+| `/plan_kinematic_path` | `moveit_msgs/srv/GetMotionPlan` | Plan only, return the trajectory |
+| `/compute_ik` | `moveit_msgs/srv/GetPositionIK` | Inverse kinematics |
+| `/compute_fk` | `moveit_msgs/srv/GetPositionFK` | Forward kinematics |
+| `/compute_cartesian_path` | `moveit_msgs/srv/GetCartesianPath` | Straight-line Cartesian path through waypoints |
+| `/get_planning_scene` | `moveit_msgs/srv/GetPlanningScene` | Read the current scene and robot state |
+| `/apply_planning_scene` | `moveit_msgs/srv/ApplyPlanningScene` | Modify the scene and wait until applied |
+| `/query_planner_interface` | `moveit_msgs/srv/QueryPlannerInterfaces` | List available planners (`ompl`, `chomp`, `pilz_industrial_motion_planner`) |
+| `/controller_manager/list_controllers` | `controller_manager_msgs/srv/ListControllers` | Check that `joint_state_broadcaster` and `manipulator_controller` are `active` |
+
+## 6. Checking that everything is up
+
+Inside the container shell (`./run.py` → `3`):
+
+```bash
+ros2 control list_controllers
+# joint_state_broadcaster  ... active
+# manipulator_controller   ... active
+
+ros2 topic hz /joint_states          # about 500 Hz
+ros2 action list                     # /move_action, /execute_trajectory, ...
+```
+
+## 7. Troubleshooting
+
+| Symptom | What to do |
+|---|---|
+| RViz window does not appear | Run `xhost +local:root` on the host and make sure `DISPLAY` is set. Or set RViz to `false` in Settings and use the topics only. |
+| `ros2 node list` shows only a few nodes | Run `ros2 node list --no-daemon`, or `ros2 daemon stop` and try again. |
+| Real robot: no connection | Check `ping <controller IP>` from the host, and that the cabinet is in the mode that accepts external control. |
+| `No 3D sensor plugin(s) defined for octomap updates` in the log | Harmless. It only means no depth camera is configured. |
+| Start fails with the image missing | `./run.py` → `4` to build it. |
+
+## License
+
+See [LICENSE](LICENSE). Based on
+[HIWINCorporation/hiwin_ros2](https://github.com/HIWINCorporation/hiwin_ros2).
