@@ -257,9 +257,14 @@ for type in ed25519 rsa; do
 done
 
 # ---- environment for VNC terminals and SSH logins (sourced by ~/.bashrc) --
+# Fast DDS shared memory does not work between user `ros` and the root
+# processes in the sim/robot/dev containers (root creates the /dev/shm
+# segments 0644, so `ros` cannot write to them): topics are listed but no data
+# arrives. Use UDP only; overridable via the container environment.
+FASTDDS_BUILTIN_TRANSPORTS="${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}"
 {
   echo "# Written by /desktop_entrypoint.sh at container start."
-  for name in ROS_DISTRO ROS2_WS ROS_DOMAIN_ID RA_TYPE ROBOT_IP CABINET USE_FAKE_HARDWARE LAUNCH_RVIZ QT_X11_NO_MITSHM; do
+  for name in ROS_DISTRO ROS2_WS ROS_DOMAIN_ID RA_TYPE ROBOT_IP CABINET USE_FAKE_HARDWARE LAUNCH_RVIZ QT_X11_NO_MITSHM FASTDDS_BUILTIN_TRANSPORTS; do
     if [[ -n "${!name+x}" ]]; then
       printf 'export %s=%q\n' "$name" "${!name}"
     fi

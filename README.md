@@ -112,8 +112,11 @@ ros2 launch hiwin_ra6_moveit_config ra6_moveit.launch.py ra_type:=$RA_TYPE robot
 
    RViz opens on the VNC desktop (software OpenGL, fine for the arm model). Commands
    started from SSH also draw on the VNC desktop; use `ssh -X` to get the window on your
-   own screen instead. You can also leave `./run.py` → `1`/`2` running and only use the
-   desktop for RViz, `ros2 topic`, and your own code: everything is on the host network.
+   own screen instead. You can also leave `./run.py` → `1`/`2` running and use the
+   desktop for `ros2 topic`, a plain `rviz2` (add *RobotModel* with description topic
+   `/robot_description`, and *TF*) and your own code: everything is on the host network.
+   Do not run the launch file in both places at once; two `move_group`s with the same
+   `ROS_DOMAIN_ID` conflict.
 
 4. Stop it with `./run.py` → `7`. Logging out of XFCE only starts a new session.
 
@@ -126,6 +129,9 @@ Details:
 - Ports are changed in `./run.py` → `0` → `6`. The container uses the host network, so
   the ports are open on every network interface of this PC, including the robot LAN.
   Choose a strong password. Root login over SSH is disabled.
+- ROS 2 in the desktop uses UDP only (`FASTDDS_BUILTIN_TRANSPORTS=UDPv4`). Fast DDS
+  shared memory does not work between user `ros` and the root `sim`/`robot`/`dev`
+  containers: topics would be listed but no data would arrive.
 - The SSH host key is kept in the Docker volume `hiwin_ros2_desktop_ssh_keys`, so
   clients do not warn about a changed key after a restart.
 - Screen size: `VNC_GEOMETRY=1920x1080` in `.env`. noVNC can also scale the screen

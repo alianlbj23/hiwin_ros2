@@ -106,8 +106,9 @@ ros2 launch hiwin_ra6_moveit_config ra6_moveit.launch.py ra_type:=$RA_TYPE robot
 
    RViz 會顯示在 VNC 桌面上（軟體 OpenGL 繪圖，顯示手臂模型足夠）。從 SSH 執行的指令，
    視窗也會出現在 VNC 桌面；想讓視窗顯示在自己的螢幕上，請改用 `ssh -X`。你也可以讓
-   `./run.py` → `1`/`2` 繼續執行，桌面只拿來開 RViz、`ros2 topic` 或寫自己的程式，因為所有容器
-   都在 host network 上。
+   `./run.py` → `1`/`2` 繼續執行，桌面拿來用 `ros2 topic`、單純的 `rviz2`（加入 *RobotModel*，
+   description topic 設為 `/robot_description`，再加 *TF*）或寫自己的程式，因為所有容器都在
+   host network 上。不要在兩邊同時執行 launch 檔；同一個 `ROS_DOMAIN_ID` 有兩個 `move_group` 會互相衝突。
 
 4. 用 `./run.py` → `7` 停止。在 XFCE 裡登出只會重新開一個桌面工作階段，不會停止容器。
 
@@ -118,6 +119,8 @@ ros2 launch hiwin_ra6_moveit_config ra6_moveit.launch.py ra_type:=$RA_TYPE robot
   容器建立的，請先清掉（`./dev.py` → `5`）。
 - 連接埠在 `./run.py` → `0` → `6` 修改。容器使用 host network，連接埠會開在這台電腦的所有網卡上，
   包括接手臂的那個網段，請設定夠強的密碼。SSH 不允許 root 登入。
+- 桌面裡的 ROS 2 只走 UDP（`FASTDDS_BUILTIN_TRANSPORTS=UDPv4`）。Fast DDS 的共享記憶體在使用者
+  `ros` 和以 root 執行的 `sim`/`robot`/`dev` 容器之間無法運作：會看得到 topic，但收不到資料。
 - SSH 主機金鑰存在 Docker volume `hiwin_ros2_desktop_ssh_keys`，重新啟動後用戶端不會出現金鑰變更的警告。
 - 畫面大小：在 `.env` 設定 `VNC_GEOMETRY=1920x1080`。noVNC 也可以縮放畫面（設定齒輪 → *Scaling mode*）。
 
