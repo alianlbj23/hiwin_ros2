@@ -1,8 +1,10 @@
 # Build the HIWIN RA6 image and push it to GitHub Container Registry.
 #
 # Triggers: every push to main (i.e. a merged PR) and manual "Run workflow".
-# Result:   ghcr.io/<owner>/hiwin_ros2:humble            (moving tag, what run.py pulls)
-#           ghcr.io/<owner>/hiwin_ros2:humble-<short sha> (immutable, for rollback)
+# Result:   ghcr.io/<owner>/hiwin_ros2:humble                    (moving tag, what run.py pulls)
+#           ghcr.io/<owner>/hiwin_ros2:humble-<short sha>        (immutable, for rollback)
+#           ghcr.io/<owner>/hiwin_ros2:humble-desktop            (Dockerfile target `desktop`:
+#           ghcr.io/<owner>/hiwin_ros2:humble-desktop-<short sha>  + XFCE/VNC/noVNC/SSH)
 #
 # The package is private by default the first time it is created. To let
 # `docker pull` work without a login: GitHub -> Packages -> hiwin_ros2 ->
@@ -27,7 +29,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     # ROS 2 + MoveIt + EtherLab from source: ~20 min locally, slower on a 2-core runner.
-    timeout-minutes: 120
+    # The desktop image reuses those layers and only adds the desktop packages.
+    timeout-minutes: 150
     permissions:
       contents: read
       packages: write
@@ -67,9 +70,36 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
+          target: base
           push: true
           build-args: ROS_DISTRO=${{ env.ROS_DISTRO }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Desktop image metadata
+        id: meta_desktop
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ env.ROS_DISTRO }}-desktop
+            type=sha,prefix=${{ env.ROS_DISTRO }}-desktop-
+
+      # Same builder as the step above, so every layer up to `FROM hiwin AS desktop`
+      # is already local; only the desktop packages are built here. Separate cache
+      # scope so it does not overwrite the base image cache.
+      - name: Build and push (desktop)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: desktop
+          push: true
+          build-args: ROS_DISTRO=${{ env.ROS_DISTRO }}
+          tags: ${{ steps.meta_desktop.outputs.tags }}
+          labels: ${{ steps.meta_desktop.outputs.labels }}
+          cache-from: |
+            type=gha
+            type=gha,scope=desktop
+          cache-to: type=gha,scope=desktop,mode=max

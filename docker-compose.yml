@@ -3,6 +3,7 @@
 #   xhost +local:root                 # allow RViz to use the host X server
 #   docker compose up robot           # real RA610-1476 via GC2 cabinet
 #   docker compose up sim             # mock hardware
+#   docker compose up -d desktop      # remote desktop: VNC / browser / SSH (set VNC_PASSWORD)
 #
 x-common: &common
   # Pulled from GHCR (built by .github/workflows/docker-image.yml). Set HIWIN_IMAGE
@@ -86,3 +87,40 @@ services:
     #   - /dev/EtherCAT0:/dev/EtherCAT0
     #   - /dev/i2c-0:/dev/i2c-0
     #   - /dev/ttyS1:/dev/ttyS1
+
+  # Remote desktop (image target `desktop`): XFCE over VNC, the same desktop in a
+  # browser through noVNC, and SSH, all as user `ros` with VNC_PASSWORD from .env.
+  # The container refuses to start without a password. Host network: the ports
+  # are opened on every interface of this PC. Driven by ./run.py -> 9.
+  #   VNC viewer  <host>:5901
+  #   browser     http://<host>:8080/vnc.html
+  #   ssh         ssh -p 2222 ros@<host>
+  desktop:
+    <<: *common
+    image: ${HIWIN_DESKTOP_IMAGE:-ghcr.io/alianlbj23/hiwin_ros2:humble-desktop}
+    build:
+      context: .
+      target: desktop
+    container_name: hiwin_ra6_desktop
+    init: true                # forward docker stop to the entrypoint, reap zombies
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+      RA_TYPE: ${RA_TYPE:-ra610_1476}
+      LAUNCH_RVIZ: ${LAUNCH_RVIZ:-true}
+      ROBOT_IP: ${ROBOT_IP:-}
+      # No `:?` guard: compose would then refuse to start every other service too.
+      VNC_PASSWORD: ${VNC_PASSWORD:-}
+      VNC_PORT: ${VNC_PORT:-5901}
+      NOVNC_PORT: ${NOVNC_PORT:-8080}
+      SSH_PORT: ${SSH_PORT:-2222}
+      # X display inside the container. With the host network the X socket name is
+      # shared with the host, so stay clear of the host's :0/:1.
+      VNC_DISPLAY: ${VNC_DISPLAY:-20}
+      VNC_GEOMETRY: ${VNC_GEOMETRY:-1920x1080}
+    volumes:
+      - /dev/shm:/dev/shm
+      - ./user_ws:/user_ws
+      - desktop_ssh_keys:/etc/ssh/keys   # keep the SSH host key across restarts
+
+volumes:
+  desktop_ssh_keys:

@@ -3,14 +3,17 @@
 
     ./run.py
 
-Robot type, controller IP, RViz switch and ROS_DOMAIN_ID are remembered in
-.env (git-ignored), so the next run only needs Enter.
+Robot type, controller IP, RViz switch, ROS_DOMAIN_ID and the remote desktop
+password/ports are remembered in .env (git-ignored), so the next run only needs Enter.
 
-The image is built by GitHub Actions (.github/workflows/docker-image.yml) and
-pulled from GHCR; set HIWIN_IMAGE to use another tag or a locally built image.
+The images are built by GitHub Actions (.github/workflows/docker-image.yml) and
+pulled from GHCR; set HIWIN_IMAGE / HIWIN_DESKTOP_IMAGE to use another tag or a
+locally built image.
 """
+import getpass
 import ipaddress
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -22,6 +25,15 @@ ROOT = Path(__file__).resolve().parent
 ENV_FILE = ROOT / ".env"
 DEFAULT_IMAGE = "ghcr.io/alianlbj23/hiwin_ros2:humble"
 IMAGE = os.environ.get("HIWIN_IMAGE", "").strip() or DEFAULT_IMAGE
+# Same image plus XFCE, TigerVNC, noVNC and an SSH server (Dockerfile stage `desktop`).
+DEFAULT_DESKTOP_IMAGE = DEFAULT_IMAGE + "-desktop"
+DESKTOP_IMAGE = os.environ.get("HIWIN_DESKTOP_IMAGE", "").strip() or DEFAULT_DESKTOP_IMAGE
+DESKTOP_USER = "ros"
+DESKTOP_PORT_KEYS = {"VNC_PORT": "VNC", "NOVNC_PORT": "noVNC (browser)", "SSH_PORT": "SSH"}
+# TigerVNC only uses the first 8 characters and needs at least 6. `$`, `#`, quotes and
+# spaces are excluded because compose and load_env() treat them specially in .env.
+VNC_PASSWORD_RE = re.compile(r"[A-Za-z0-9._@!%+=-]{6,8}")
+SECRET_KEYS = ("VNC_PASSWORD",)
 RA_TYPES = ["ra605_710", "ra610_1355", "ra610_1476", "ra610_1869"]
 # TCP port the GC2 controller listens on (hiwin_robot_client_library COMMAND_PORT).
 # Used only to detect candidates; the driver itself does the real connection.
@@ -30,7 +42,10 @@ PROBE_TIMEOUT_S = 0.5
 AUTO_SCAN_MIN_PREFIX = 24     # auto-scan only /24 or smaller networks (<= 254 hosts)
 MANUAL_SCAN_MAX_HOSTS = 1024  # /22
 SCAN_WORKERS = 64
-DEFAULTS = {"RA_TYPE": "ra610_1476", "ROBOT_IP": "", "LAUNCH_RVIZ": "true", "ROS_DOMAIN_ID": "0"}
+DEFAULTS = {
+    "RA_TYPE": "ra610_1476", "ROBOT_IP": "", "LAUNCH_RVIZ": "true", "ROS_DOMAIN_ID": "0",
+    "VNC_PASSWORD": "", "VNC_PORT": "5901", "NOVNC_PORT": "8080", "SSH_PORT": "2222",
+}
 
 
 # ----------------------------------------------------------------- helpers
@@ -58,10 +73,15 @@ def pause() -> None:
     ask("\nPress Enter to return to the menu")
 
 
+def format_cmd(cmd: list[str], env: dict | None = None) -> str:
+    """Shell-like echo of a command and its extra environment, with secrets masked."""
+    shown = [f"{k}={'***' if k in SECRET_KEYS else v}" for k, v in (env or {}).items()]
+    return "$ " + " ".join(shown + cmd)
+
+
 def run(cmd: list[str], env: dict | None = None) -> int:
     """Run a command in the repo root with extra environment variables, echoing it first."""
-    shown = " ".join(f"{k}={v}" for k, v in (env or {}).items())
-    print(f"\n$ {shown} {' '.join(cmd)}".replace("$  ", "$ "))
+    print("\n" + format_cmd(cmd, env))
     try:
         return subprocess.run(cmd, cwd=ROOT, env={**os.environ, **(env or {})}).returncode
     except KeyboardInterrupt:
@@ -116,8 +136,8 @@ def tcp_port_open(ip: str, port: int = HIWIN_COMMAND_PORT, timeout: float = PROB
         return False
 
 
-def host_networks(ip_addr_output: str | None = None) -> list[tuple[str, ipaddress.IPv4Network]]:
-    """(interface, network) for this PC's IPv4 interfaces, parsed from `ip -4 -o addr`.
+def host_interfaces(ip_addr_output: str | None = None) -> list[tuple[str, ipaddress.IPv4Interface]]:
+    """(interface, address/prefix) for this PC's IPv4 interfaces, parsed from `ip -4 -o addr`.
 
     Loopback, Docker/bridge/veth, VPN (tailscale) and single-address (/32) entries are skipped.
     """
@@ -131,7 +151,7 @@ def host_networks(ip_addr_output: str | None = None) -> list[tuple[str, ipaddres
         except (OSError, subprocess.TimeoutExpired) as exc:
             print(f"Note: could not list network interfaces: {exc}")
             return []
-    nets: list[tuple[str, ipaddress.IPv4Network]] = []
+    found: list[tuple[str, ipaddress.IPv4Interface]] = []
     for line in ip_addr_output.splitlines():
         parts = line.split()
         if len(parts) < 4 or parts[2] != "inet":
@@ -140,12 +160,22 @@ def host_networks(ip_addr_output: str | None = None) -> list[tuple[str, ipaddres
         if iface == "lo" or iface.startswith(("docker", "br-", "veth", "tailscale", "virbr")):
             continue
         try:
-            net = ipaddress.ip_interface(cidr).network
+            addr = ipaddress.ip_interface(cidr)
         except ValueError:
             continue
-        if isinstance(net, ipaddress.IPv4Network) and net.num_addresses > 2:
-            nets.append((iface, net))
-    return nets
+        if isinstance(addr, ipaddress.IPv4Interface) and addr.network.num_addresses > 2:
+            found.append((iface, addr))
+    return found
+
+
+def host_networks(ip_addr_output: str | None = None) -> list[tuple[str, ipaddress.IPv4Network]]:
+    """(interface, network) for this PC's LAN interfaces (see host_interfaces)."""
+    return [(iface, addr.network) for iface, addr in host_interfaces(ip_addr_output)]
+
+
+def host_ipv4s(ip_addr_output: str | None = None) -> list[tuple[str, str]]:
+    """(interface, address) for this PC's LAN interfaces (see host_interfaces)."""
+    return [(iface, str(addr.ip)) for iface, addr in host_interfaces(ip_addr_output)]
 
 
 def neighbour_ips() -> list[str]:
@@ -244,20 +274,20 @@ How to find the controller IP
     subnet explicitly with 's' (e.g. 192.168.0.0/24); TCP through NAT works.""")
 
 
-def image_exists() -> bool:
-    return subprocess.run(["docker", "image", "inspect", IMAGE], capture_output=True).returncode == 0
+def image_exists(image: str = IMAGE) -> bool:
+    return subprocess.run(["docker", "image", "inspect", image], capture_output=True).returncode == 0
 
 
-def ensure_image() -> bool:
+def ensure_image(image: str = IMAGE, target: str = "base") -> bool:
     """Make sure the image exists locally: offer to pull it, then to build it as a fallback."""
-    if image_exists():
+    if image_exists(image):
         return True
-    if yes_no(f"Image {IMAGE} not found. Pull it from the registry now?", True):
-        if do_pull() == 0:
+    if yes_no(f"Image {image} not found. Pull it from the registry now?", True):
+        if do_pull(image) == 0:
             return True
         print("Pull failed. If the GHCR package is private, run `docker login ghcr.io` first.")
     if yes_no("Build the image locally instead (takes 10-20 min)?", False):
-        return do_build() == 0
+        return do_build(image, target) == 0
     print("Cannot start without the image.")
     return False
 
@@ -344,20 +374,124 @@ def common_env(cfg: dict[str, str]) -> dict[str, str]:
     return {k: cfg[k] for k in ("RA_TYPE", "LAUNCH_RVIZ", "ROS_DOMAIN_ID")}
 
 
+def valid_vnc_password(text: str) -> bool:
+    return VNC_PASSWORD_RE.fullmatch(text) is not None
+
+
+def desktop_port_errors(cfg: dict[str, str]) -> list[str]:
+    """Problems with the remote desktop ports in cfg; empty when all are usable."""
+    errors = []
+    for key, name in DESKTOP_PORT_KEYS.items():
+        val = cfg.get(key, "")
+        if not (val.isdigit() and 1024 <= int(val) <= 65535):
+            errors.append(f"{name} port {val!r} must be a number from 1024 to 65535.")
+    if not errors:
+        ports = [cfg[k] for k in DESKTOP_PORT_KEYS]
+        if len(set(ports)) != len(ports):
+            errors.append("VNC, noVNC and SSH cannot use the same port.")
+    return errors
+
+
+def ports_in_use(cfg: dict[str, str], probe=None) -> list[tuple[str, int]]:
+    """Remote desktop ports that already accept connections on this PC (the desktop
+    container uses the host network, so they must be free)."""
+    probe = probe or (lambda port: tcp_port_open("127.0.0.1", port, timeout=PROBE_TIMEOUT_S))
+    return [(k, int(cfg[k])) for k in DESKTOP_PORT_KEYS if probe(int(cfg[k]))]
+
+
+def desktop_env(cfg: dict[str, str]) -> dict[str, str]:
+    """Environment for the `desktop` compose service."""
+    return {**common_env(cfg), "ROBOT_IP": cfg["ROBOT_IP"],
+            **{k: cfg[k] for k in ("VNC_PASSWORD", *DESKTOP_PORT_KEYS)}}
+
+
+def desktop_connection_info(cfg: dict[str, str], addresses: list[str]) -> str:
+    """How to reach the desktop container from a VNC viewer, a browser or SSH."""
+    lines = []
+    for ip in addresses:
+        lines += [
+            f"  {ip}",
+            f"    VNC viewer : {ip}:{cfg['VNC_PORT']}",
+            f"    Browser    : http://{ip}:{cfg['NOVNC_PORT']}/vnc.html",
+            f"    SSH        : ssh -p {cfg['SSH_PORT']} {DESKTOP_USER}@{ip}",
+        ]
+    lines.append(f"  User: {DESKTOP_USER}   Password: the one set in Settings (0) -> 6")
+    return "\n".join(lines)
+
+
+def choose_vnc_password() -> str | None:
+    """Ask for a new VNC/SSH password twice without echoing it. None if cancelled."""
+    print("\nPassword for VNC and for SSH user 'ros': 6-8 characters, letters, digits or . _ @ ! % + = -")
+    for _ in range(3):
+        try:
+            pw = getpass.getpass("New password (Enter = cancel): ")
+            if not pw:
+                return None
+            again = getpass.getpass("Repeat: ")
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return None
+        if not valid_vnc_password(pw):
+            print("Not allowed: 6-8 characters from letters, digits and . _ @ ! % + = -")
+        elif pw != again:
+            print("The two entries differ.")
+        else:
+            return pw
+    return None
+
+
+def desktop_settings(cfg: dict[str, str]) -> None:
+    """Remote desktop sub-menu: password and ports. Changes are saved by the caller."""
+    while True:
+        print("\n---------- Remote desktop ----------")
+        print(f"  1) Password      : {'set' if cfg['VNC_PASSWORD'] else 'unset'}")
+        print(f"  2) VNC port      : {cfg['VNC_PORT']}")
+        print(f"  3) noVNC port    : {cfg['NOVNC_PORT']}  (browser)")
+        print(f"  4) SSH port      : {cfg['SSH_PORT']}")
+        print("  Enter) Back")
+        choice = ask("Select")
+        if choice == "":
+            return
+        if choice == "1":
+            pw = choose_vnc_password()
+            if pw is None:
+                print("Password unchanged.")
+            else:
+                cfg["VNC_PASSWORD"] = pw
+        elif choice in ("2", "3", "4"):
+            key = list(DESKTOP_PORT_KEYS)[int(choice) - 2]
+            trial = dict(cfg, **{key: ask(f"{DESKTOP_PORT_KEYS[key]} port", cfg[key])})
+            errors = desktop_port_errors(trial)
+            if errors:
+                print("\n".join(errors))
+                continue
+            cfg[key] = trial[key]
+        else:
+            print("Invalid choice.")
+
+
 def show_settings(cfg: dict[str, str], with_ip: bool) -> None:
     ip = f"  IP={cfg['ROBOT_IP'] or 'unset'}" if with_ip else ""
     print(f"\nCurrent settings: type={cfg['RA_TYPE']}{ip}  RViz={cfg['LAUNCH_RVIZ']}")
 
 
 # ----------------------------------------------------------------- actions
-def do_pull() -> int:
-    """Fetch the image built by GitHub Actions (also refreshes a stale local copy)."""
-    return run(["docker", "pull", IMAGE])
+def do_pull(image: str = IMAGE) -> int:
+    """Fetch an image built by GitHub Actions (also refreshes a stale local copy)."""
+    return run(["docker", "pull", image])
 
 
-def do_build() -> int:
+def do_pull_all() -> int:
+    """Pull the main image, and the desktop image too if it was pulled before."""
+    rc = do_pull(IMAGE)
+    if rc == 0 and image_exists(DESKTOP_IMAGE):
+        rc = do_pull(DESKTOP_IMAGE)
+    return rc
+
+
+def do_build(image: str = IMAGE, target: str = "base") -> int:
     """Local fallback for when the registry is unreachable or the Dockerfile is being changed."""
-    return run(["docker", "build", "-t", IMAGE, "."])
+    return run(["docker", "build", "--target", target, "-t", image, "."])
 
 
 def do_settings(cfg: dict[str, str]) -> int:
@@ -369,6 +503,8 @@ def do_settings(cfg: dict[str, str]) -> int:
         print(f"  3) Launch RViz    : {cfg['LAUNCH_RVIZ']}")
         print(f"  4) ROS_DOMAIN_ID  : {cfg['ROS_DOMAIN_ID']}")
         print("  5) Reset to defaults")
+        print(f"  6) Remote desktop : password {'set' if cfg['VNC_PASSWORD'] else 'unset'}, "
+              f"VNC {cfg['VNC_PORT']} / noVNC {cfg['NOVNC_PORT']} / SSH {cfg['SSH_PORT']}")
         print("  Enter) Back to main menu")
         choice = ask("Select")
         if choice == "":
@@ -387,8 +523,10 @@ def do_settings(cfg: dict[str, str]) -> int:
                 print("Invalid value.")
                 continue
         elif choice == "5":
-            if yes_no("Reset all settings (this clears the IP)?", False):
+            if yes_no("Reset all settings (this clears the IP and the VNC password)?", False):
                 cfg.update(DEFAULTS)
+        elif choice == "6":
+            desktop_settings(cfg)
         else:
             print("Invalid choice.")
             continue
@@ -443,6 +581,42 @@ def do_shell(cfg: dict[str, str]) -> int:
     return run(compose() + ["run", "--rm", "shell"], common_env(cfg))
 
 
+def do_desktop(cfg: dict[str, str]) -> int:
+    """Start the remote desktop container (VNC + noVNC + SSH) in the background."""
+    if not ensure_image(DESKTOP_IMAGE, "desktop"):
+        return 1
+    errors = desktop_port_errors(cfg)
+    if errors:
+        print("\n".join(errors) + "\nFix them in Settings (0) -> 6.")
+        return 1
+    if not cfg["VNC_PASSWORD"]:
+        print("\nNo remote desktop password set yet.")
+        pw = choose_vnc_password()
+        if pw is None:
+            print("A password is required, aborting.")
+            return 1
+        cfg["VNC_PASSWORD"] = pw
+        save_env(cfg)
+    running = subprocess.run(["docker", "ps", "-q", "-f", "name=^hiwin_ra6_desktop$"],
+                             capture_output=True, text=True).stdout.strip()
+    if not running:
+        busy = ports_in_use(cfg)
+        if busy:
+            for key, port in busy:
+                print(f"Port {port} ({DESKTOP_PORT_KEYS[key]}) is already in use on this PC.")
+            print("Stop whatever uses it or pick another port in Settings (0) -> 6.")
+            return 1
+    rc = run(compose() + ["up", "-d", "desktop"], desktop_env(cfg))
+    if rc != 0:
+        return rc
+    addresses = ["localhost"] + [ip for _, ip in host_ipv4s()]
+    print("\nRemote desktop is running in the background. Connect with:")
+    print(desktop_connection_info(cfg, addresses))
+    print("\nROS 2 and /ros2_ws are sourced in every terminal; RViz opens on the VNC desktop.")
+    print("Stop it with option 7. Startup messages: option 5.")
+    return 0
+
+
 def do_logs() -> int:
     print("\nCtrl+C to stop following logs.")
     return run(compose() + ["logs", "-f", "--tail", "200"])
@@ -454,21 +628,24 @@ def do_stop() -> int:
 
 def do_status() -> int:
     rc = run(compose() + ["ps"])
-    print(f"\nImage {IMAGE}: {'present' if image_exists() else 'not pulled'}")
+    print()
+    for image in (IMAGE, DESKTOP_IMAGE):
+        print(f"Image {image}: {'present' if image_exists(image) else 'not pulled'}")
     return rc
 
 
 # ----------------------------------------------------------------- menu
 MENU = [
-    ("0", "Settings (robot type / controller IP / RViz / domain ID)", lambda cfg: do_settings(cfg)),
+    ("0", "Settings (robot type / controller IP / RViz / domain ID / remote desktop)", lambda cfg: do_settings(cfg)),
     ("1", "Simulation (mock hardware + RViz)", lambda cfg: do_sim(cfg)),
     ("2", "Real robot (GC2 cabinet)", lambda cfg: do_robot(cfg)),
     ("3", "Shell inside the container", lambda cfg: do_shell(cfg)),
-    ("4", "Pull / update the image (from GHCR)", lambda cfg: do_pull()),
+    ("4", "Pull / update the image (from GHCR)", lambda cfg: do_pull_all()),
     ("5", "Follow container logs", lambda cfg: do_logs()),
     ("6", "Status", lambda cfg: do_status()),
     ("7", "Stop containers", lambda cfg: do_stop()),
     ("8", "Build the image locally (fallback)", lambda cfg: do_build()),
+    ("9", "Remote desktop (VNC / browser / SSH)", lambda cfg: do_desktop(cfg)),
 ]
 
 

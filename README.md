@@ -1,5 +1,7 @@
 # HIWIN RA6 ROS 2 (Docker)
 
+English | [繁體中文](README.zh-TW.md)
+
 Run a HIWIN RA6 robot (default: RA610-1476) with ROS 2 Humble and MoveIt 2 from a
 single Docker image. Nothing has to be installed on the host except Docker.
 
@@ -9,7 +11,8 @@ Supported robot types: `ra605_710`, `ra610_1355`, `ra610_1476`, `ra610_1869`.
 
 - Ubuntu 22.04 (or WSL2 with WSLg) with Docker Engine and the `docker compose` plugin
 - Python 3 (for `run.py`, no extra packages)
-- A desktop session (`DISPLAY` set) if you want to see RViz
+- A desktop session (`DISPLAY` set) if you want to see RViz, or the remote desktop
+  (section 2, *Remote desktop*) to use RViz from another computer
 - For a real robot: the robot connected to a HIWIN GC2 cabinet, reachable over the network
 
 ## 2. Quick start
@@ -28,7 +31,7 @@ your machine.
 ```
 ========== HIWIN RA6 Docker launcher ==========
  Settings: type=ra610_1476  IP=unset  RViz=true
-  0) Settings (robot type / controller IP / RViz / domain ID)
+  0) Settings (robot type / controller IP / RViz / domain ID / remote desktop)
   1) Simulation (mock hardware + RViz)
   2) Real robot (GC2 cabinet)
   3) Shell inside the container
@@ -37,20 +40,22 @@ your machine.
   6) Status
   7) Stop containers
   8) Build the image locally (fallback)
+  9) Remote desktop (VNC / browser / SSH)
   q) Quit
 ```
 
 | Option | What it does |
 |---|---|
-| 0 | Change robot type, controller IP (with network scan and help), RViz on/off, ROS_DOMAIN_ID. Saved to `.env`, remembered next time. |
+| 0 | Change robot type, controller IP (with network scan and help), RViz on/off, ROS_DOMAIN_ID, and (`6`) the remote desktop password and ports. Saved to `.env`, remembered next time. |
 | 1 | Start MoveIt with a simulated robot. Safe anywhere, no robot needed. RViz opens if enabled. |
 | 2 | Start MoveIt connected to the real robot. Asks for the controller IP once, then asks you to confirm before connecting. |
 | 3 | Open a terminal inside the container with ROS 2 already set up. Use it for `ros2 topic echo`, your own nodes, etc. |
-| 4 | Pull the latest image from GHCR. Run it again after a new version was merged. |
+| 4 | Pull the latest image from GHCR (and the desktop image, if you pulled it before). Run it again after a new version was merged. |
 | 5 | Show the live log of the running container. |
 | 6 | Show which containers are running and whether the image exists. |
 | 7 | Stop everything. |
 | 8 | Build the image on this machine instead (only needed when GHCR is unreachable or you are editing the Dockerfile). |
+| 9 | Start the remote desktop in the background: VNC, browser (noVNC) and SSH into one container. See *Remote desktop* below. |
 
 Press `Ctrl+C` in the launcher to stop a running simulation or robot session.
 
@@ -79,6 +84,53 @@ To write your own ROS 2 code against the running stack, use the second launcher
 Motion speed is limited to 10 % of the robot's maximum by default. Raise it in RViz
 (Velocity Scaling) only after testing in simulation.
 
+### Remote desktop (VNC / browser / SSH)
+
+A second image, `ghcr.io/alianlbj23/hiwin_ros2:humble-desktop`, is the same ROS 2
+stack plus an XFCE desktop. Use it to work on this PC from another computer, or on a
+machine without a screen.
+
+1. `./run.py` → `9`. The first time it pulls the desktop image and asks for a password
+   (6-8 characters: letters, digits or `. _ @ ! % + = -`). It is stored in `.env` and is
+   the password for VNC, SSH and `sudo`.
+2. `run.py` prints the addresses. Connect with any of:
+
+| How | Address | Notes |
+|---|---|---|
+| VNC viewer (TigerVNC, RealVNC, ...) | `<PC IP>:5901` | Asks only for the password |
+| Browser (noVNC) | `http://<PC IP>:8080/vnc.html` | Nothing to install. Click *Connect*, enter the password |
+| SSH | `ssh -p 2222 ros@<PC IP>` | Also works with VS Code *Remote-SSH* |
+
+3. Open a terminal on the desktop (or log in with SSH). ROS 2, `/ros2_ws` and
+   `ROS_DOMAIN_ID` are already set up, so you can start the stack there:
+
+```bash
+ros2 launch hiwin_ra6_moveit_config ra6_moveit.launch.py ra_type:=$RA_TYPE use_fake_hardware:=true
+# real robot (same warnings as ./run.py -> 2 apply):
+ros2 launch hiwin_ra6_moveit_config ra6_moveit.launch.py ra_type:=$RA_TYPE robot_ip:=$ROBOT_IP use_fake_hardware:=false
+```
+
+   RViz opens on the VNC desktop (software OpenGL, fine for the arm model). Commands
+   started from SSH also draw on the VNC desktop; use `ssh -X` to get the window on your
+   own screen instead. You can also leave `./run.py` → `1`/`2` running and only use the
+   desktop for RViz, `ros2 topic`, and your own code: everything is on the host network.
+
+4. Stop it with `./run.py` → `7`. Logging out of XFCE only starts a new session.
+
+Details:
+
+- The user is `ros` (uid 1000). `user_ws/` is mounted at `/user_ws`, so code you edit
+  there is the same as on the host. Everything else in `/home/ros` is lost when the
+  container is stopped. If `user_ws/build` was created by the root-owned `dev`
+  container, clean it first (`./dev.py` → `5`).
+- Ports are changed in `./run.py` → `0` → `6`. The container uses the host network, so
+  the ports are open on every network interface of this PC, including the robot LAN.
+  Choose a strong password. Root login over SSH is disabled.
+- The SSH host key is kept in the Docker volume `hiwin_ros2_desktop_ssh_keys`, so
+  clients do not warn about a changed key after a restart.
+- Screen size: `VNC_GEOMETRY=1920x1080` in `.env`. noVNC can also scale the screen
+  (settings gear → *Scaling mode*).
+
 ## 3. Without the menu (docker compose)
 
 ```bash
@@ -89,6 +141,7 @@ xhost +local:root                        # let RViz open a window
 docker compose up sim                    # simulation
 docker compose up robot                  # real robot
 docker compose run --rm shell            # terminal inside the container
+docker compose up -d desktop             # remote desktop (needs VNC_PASSWORD in .env)
 docker compose down                      # stop
 ```
 
@@ -99,8 +152,13 @@ Settings in `.env`:
 | `RA_TYPE` | `ra610_1476` | Robot model |
 | `ROBOT_IP` | *(empty)* | GC2 controller IP, required for `robot` |
 | `LAUNCH_RVIZ` | `true` | Open RViz |
-| `HIWIN_IMAGE` | `ghcr.io/alianlbj23/hiwin_ros2:humble` | Image used by `run.py` and compose. Point it at another tag (e.g. `...:humble-<sha>`) or at `hiwin_ros2:humble` after a local `docker compose build`. |
+| `HIWIN_IMAGE` | `ghcr.io/alianlbj23/hiwin_ros2:humble` | Image used by `run.py` and compose. Point it at another GHCR tag (e.g. `...:humble-<sha>`). A local build (`./run.py` → `8`, `docker compose build`) is tagged with this same name, so nothing needs to change. |
 | `ROS_DOMAIN_ID` | `0` | Must match other ROS 2 machines you want to talk to |
+| `VNC_PASSWORD` | *(empty)* | Remote desktop password (VNC, SSH user `ros`, sudo), 6-8 characters. `desktop` does not start without it. |
+| `VNC_PORT` / `NOVNC_PORT` / `SSH_PORT` | `5901` / `8080` / `2222` | Remote desktop ports |
+| `VNC_GEOMETRY` | `1920x1080` | Remote desktop screen size |
+| `VNC_DISPLAY` | `20` | X display number inside the desktop container. Change it only if the host already uses `:20`. |
+| `HIWIN_DESKTOP_IMAGE` | `ghcr.io/alianlbj23/hiwin_ros2:humble-desktop` | Image of the `desktop` service |
 
 ### How the image is built
 
@@ -109,6 +167,11 @@ Dockerfile on every push to `main` (and on manual *Run workflow*) and pushes two
 to GHCR: `humble` (always the latest `main`) and `humble-<short sha>` (immutable, for
 rolling back). Pull `humble` again after a merge to update; build locally only when
 changing the Dockerfile.
+
+The same job builds the Dockerfile target `desktop` and pushes it as `humble-desktop`
+and `humble-desktop-<short sha>`. A plain `docker build .` still produces the image
+without the desktop; `docker build --target desktop -t ghcr.io/alianlbj23/hiwin_ros2:humble-desktop .`
+builds the desktop one. Images are published only to GHCR, never to Docker Hub.
 
 ## 4. Writing your own code (`dev.py` + `user_ws/`)
 
@@ -323,6 +386,9 @@ ros2 action list                     # /move_action, /execute_trajectory, ...
 | Controller not listed as a candidate | It is on a subnet this PC does not scan automatically (larger than /24, or behind WSL2 NAT). Use `s` with the LAN subnet (e.g. `192.168.0.0/24`) or `c` to enter the IP. |
 | `No 3D sensor plugin(s) defined for octomap updates` in the log | Harmless. It only means no depth camera is configured. |
 | Start fails with the image missing | `./run.py` → `4` to pull it. |
+| Remote desktop: container stops right away | `./run.py` → `5` shows why: usually no `VNC_PASSWORD`, or a port already in use on this PC. |
+| Remote desktop: cannot connect from another computer | Check the PC firewall allows the ports (`sudo ufw allow 5901,8080,2222/tcp` on Ubuntu). On WSL2 the ports are only on the WSL VM; connect from Windows itself with `localhost`, or forward the ports to the LAN. |
+| Remote desktop on Docker Desktop: nothing answers, not even `localhost` | Docker Desktop keeps `network_mode: host` inside its own VM. Enable *Settings → Resources → Network → Enable host networking* (Docker Desktop 4.34 or later), then restart the container. This also affects `sim`/`robot` (ROS 2 discovery). |
 | `docker pull` is denied / unauthorized | The GHCR package is private. Either make it public (GitHub → Packages → hiwin_ros2 → Package settings → Change visibility) or `docker login ghcr.io` with a token that has `read:packages`. |
 
 ## License

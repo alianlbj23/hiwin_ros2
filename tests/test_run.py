@@ -98,3 +98,67 @@ def test_valid_ip():
     assert run.valid_ip("192.168.0.1")
     assert not run.valid_ip("192.168.0.")
     assert not run.valid_ip("robot")
+
+
+# ------------------------------------------------------------ remote desktop
+def test_host_ipv4s_lists_lan_addresses_only():
+    assert run.host_ipv4s(WSL_IP_ADDR) == [("eth0", "172.21.152.30"), ("enp3s0", "192.168.0.5")]
+    assert run.host_ipv4s("") == []
+
+
+@pytest.mark.parametrize("pw", ["abc123", "Hiwin-01", "a.b_c@d!"])
+def test_valid_vnc_password_accepts_6_to_8_safe_chars(pw):
+    assert run.valid_vnc_password(pw)
+
+
+@pytest.mark.parametrize("pw", ["", "abc12", "123456789", "abc 123", "ab$cdef", "ab#cdef", "ab'cdef", 'ab"cdef', "中文密碼六個字"])
+def test_valid_vnc_password_rejects_bad_values(pw):
+    assert not run.valid_vnc_password(pw)
+
+
+def test_desktop_port_errors_ok_for_defaults():
+    assert run.desktop_port_errors({"VNC_PORT": "5901", "NOVNC_PORT": "8080", "SSH_PORT": "2222"}) == []
+
+
+def test_desktop_port_errors_reports_bad_and_duplicate_ports():
+    errs = run.desktop_port_errors({"VNC_PORT": "abc", "NOVNC_PORT": "80", "SSH_PORT": "70000"})
+    assert len(errs) == 3
+    errs = run.desktop_port_errors({"VNC_PORT": "5901", "NOVNC_PORT": "5901", "SSH_PORT": "2222"})
+    assert errs and "same port" in errs[0]
+
+
+def test_ports_in_use_finds_listener(listener):
+    cfg = {"VNC_PORT": str(listener), "NOVNC_PORT": "8080", "SSH_PORT": "2222"}
+    busy = run.ports_in_use(cfg, probe=lambda port: port == listener)
+    assert busy == [("VNC_PORT", listener)]
+
+
+def test_format_cmd_masks_secrets():
+    shown = run.format_cmd(["docker", "compose", "up"], {"VNC_PASSWORD": "abc123", "RA_TYPE": "ra610_1476"})
+    assert "abc123" not in shown
+    assert "VNC_PASSWORD=***" in shown and "RA_TYPE=ra610_1476" in shown
+    assert run.format_cmd(["ls"], None) == "$ ls"
+
+
+def test_desktop_env_has_ports_and_password():
+    cfg = dict(run.DEFAULTS, VNC_PASSWORD="abc123")
+    env = run.desktop_env(cfg)
+    assert env["VNC_PASSWORD"] == "abc123"
+    assert (env["VNC_PORT"], env["NOVNC_PORT"], env["SSH_PORT"]) == ("5901", "8080", "2222")
+    assert env["ROS_DOMAIN_ID"] == cfg["ROS_DOMAIN_ID"]
+
+
+def test_desktop_connection_info_lists_every_address():
+    cfg = dict(run.DEFAULTS)
+    text = run.desktop_connection_info(cfg, ["127.0.0.1", "192.168.0.5"])
+    assert "192.168.0.5:5901" in text
+    assert "http://192.168.0.5:8080/vnc.html" in text
+    assert "ssh -p 2222 ros@192.168.0.5" in text
+
+
+def test_save_env_keeps_desktop_settings(tmp_path, monkeypatch):
+    monkeypatch.setattr(run, "ENV_FILE", tmp_path / ".env")
+    cfg = dict(run.DEFAULTS, VNC_PASSWORD="abc123", SSH_PORT="2200")
+    run.save_env(cfg)
+    loaded = run.load_env()
+    assert loaded["VNC_PASSWORD"] == "abc123" and loaded["SSH_PORT"] == "2200"
